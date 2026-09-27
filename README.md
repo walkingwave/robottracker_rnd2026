@@ -160,8 +160,9 @@ Follow the steps in the Operator Panel (details in the next section).
 │         LIVE FEED               │  Operator Panel       │
 │   (green box = tracked rover)   ├──────────────────────┤
 │                                 │  VIDEO SOURCE         │
-│                                 │  ○ Live Camera        │
-│                                 │  ● Video File [Browse]│
+│                                 │  ● Live Camera        │
+│                                 │  ○ Video File         │
+│                                 │  Camera [0 (1280x720)▾] [Scan] │
 │                                 │  [ Connect ]          │
 │                                 ├──────────────────────┤
 │                                 │  ROVER / TEAM NAME    │
@@ -188,7 +189,7 @@ Follow the steps in the Operator Panel (details in the next section).
 
 | Step | Action |
 |---|---|
-| **1** | Select **Live Camera** or **Video File**, then click **Connect** |
+| **1** | Select **Live Camera** or **Video File**. For a camera, click **Scan** to list attached cameras (built-in, USB webcam, iPhone Continuity Camera) and pick one from the dropdown. For a file, click **Browse**. Then click **Connect** |
 | **2** | Wait for the live feed to appear in the left panel |
 | **3** | Type the rover/team name in the **ROVER / TEAM NAME** field |
 | **4** | Click **▶ START TRIAL** – the timer starts, recording begins |
@@ -372,6 +373,18 @@ trials/
 
 ## Troubleshooting
 
+### Operator Panel window never appears or is blank (macOS)
+
+The macOS system Python (`/usr/bin/python3`, 3.9) bundles Tk 8.5, whose event loop stalls on recent macOS releases, so the window never draws. Use a Python 3.10+ build with Tk 8.6 or newer, then recreate the virtual environment:
+
+```bash
+uv python install 3.12
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+```
+
+Check with `python3 -c "import tkinter; print(tkinter.TkVersion)"` (should print 8.6 or 9.0).
+
 ### Green tracking box disappears during the run
 
 The tracker lost the rover. Common causes and fixes:
@@ -388,7 +401,7 @@ The tracker lost the rover. Common causes and fixes:
 
 ### Camera stuck on "Connecting…"
 
-- Verify the correct `camera_index` in `config.yaml` (try 0, 1, 2)
+- Click **Scan** in the Operator Panel and pick the right camera from the dropdown (or set `camera_index` in `config.yaml`)
 - On Linux: check `ls /dev/video*` to find available camera devices
 - Ensure no other application is using the camera
 

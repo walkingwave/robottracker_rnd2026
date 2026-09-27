@@ -8,8 +8,11 @@ Run with:
 from __future__ import annotations
 
 import argparse
+import json
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -65,6 +68,20 @@ def _sanitize(name: str) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _macos_camera_names() -> list[str]:
+    """Camera names from system_profiler (macOS only). Order matches AVFoundation index order."""
+    if sys.platform != "darwin":
+        return []
+    try:
+        out = subprocess.run(
+            ["system_profiler", "SPCameraDataType", "-json"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        return [d.get("_name", "?") for d in json.loads(out).get("SPCameraDataType", [])]
+    except Exception:
+        return []
+
+
 class OperatorApp:
     _FEED_W = 680
     _FEED_H = 383
@@ -85,8 +102,17 @@ class OperatorApp:
         self._cam_thread: threading.Thread | None = None
         self._cam_fps   = 30.0
 
+        # Callables queued by worker threads, executed on the Tk thread in _poll().
+        # (root.after() is not safe to call from other threads on macOS / Tk 9:
+        #  the callback silently never fires.)
+        self._ui_q: queue.Queue = queue.Queue()
+
         self._build_ui()
         self._root.after(33, self._poll)
+
+    def _call_ui(self, fn, *args):
+        """Thread-safe: schedule fn(*args) to run on the Tk main thread."""
+        self._ui_q.put((fn, args))
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI Construction
@@ -166,6 +192,29 @@ class OperatorApp:
             activebackground=BG, activeforeground=FG,
             font=fl, command=self._on_source_change,
         ).pack(side="left", padx=(10, 0))
+
+        # Camera picker row (shown when "camera" selected)
+        self._cam_frame = tk.Frame(right, bg=BG)
+        tk.Label(self._cam_frame, text="Camera", font=fl, bg=BG, fg=FG_DIM).pack(side="left")
+
+        cfg_idx = int(self._cfg.get("sensor", {}).get("camera_index", 0))
+        self._cam_var = tk.StringVar(value=str(cfg_idx))
+        self._cam_menu = tk.OptionMenu(self._cam_frame, self._cam_var, str(cfg_idx))
+        self._cam_menu.config(
+            font=fl, bg=BG2, fg=FG, activebackground=BORDER, activeforeground=FG,
+            relief="flat", highlightthickness=0, bd=0, cursor="hand2",
+        )
+        self._cam_menu["menu"].config(bg=BG2, fg=FG, activebackground=BORDER, font=fl)
+        self._cam_menu.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+        self._scan_btn = tk.Button(
+            self._cam_frame, text="Scan",
+            font=fl, bg=BORDER, fg=FG,
+            activebackground=BG2, relief="flat",
+            padx=6, cursor="hand2",
+            command=self._scan_cameras,
+        )
+        self._scan_btn.pack(side="right", padx=(4, 0))
 
         # File path row (shown when "file" selected)
         self._file_frame = tk.Frame(right, bg=BG)
@@ -311,9 +360,72 @@ class OperatorApp:
     def _on_source_change(self):
         if self._source_var.get() == "camera":
             self._file_frame.pack_forget()
+            self._cam_frame.pack(fill="x", pady=(0, 6),
+                                 before=self._connect_btn)
         else:
+            self._cam_frame.pack_forget()
             self._file_frame.pack(fill="x", pady=(0, 6),
                                   before=self._connect_btn)
+
+    @staticmethod
+    def _parse_cam_index(label: str) -> int:
+        """'1  (1280x720)' -> 1"""
+        m = re.match(r"\s*(\d+)", label)
+        return int(m.group(1)) if m else 0
+
+    def _scan_cameras(self, max_index: int = 6):
+        """Probe camera indices in a background thread and fill the dropdown."""
+        self._scan_btn.config(state="disabled", text="Scanning…")
+        self._write_log("🔍  Scanning for cameras…", "info")
+
+        def probe(i: int, out: dict):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                out["res"] = frame.shape[1::-1] if ret and frame is not None else None
+                out["ok"] = True
+            cap.release()
+
+        def worker():
+            names = _macos_camera_names()
+            limit = min(max_index, len(names)) if names else max_index
+            found = []
+            for i in range(limit):
+                out: dict = {}
+                # Probe each index in its own thread so a wedged camera
+                # (permission prompt, device busy) can't hang the scan.
+                t = threading.Thread(target=probe, args=(i, out), daemon=True)
+                t.start()
+                t.join(timeout=5.0)
+                if t.is_alive():
+                    found.append(f"{i}  (timeout: busy or no permission)")
+                    if not names:
+                        break
+                    continue
+                if not out.get("ok"):
+                    if not names:
+                        break          # AVFoundation indices are contiguous
+                    continue
+                name = f" {names[i]}" if i < len(names) else ""
+                res  = f"{out['res'][0]}x{out['res'][1]}" if out.get("res") else "no signal"
+                found.append(f"{i} {name} ({res})".replace("  ", " "))
+            self._call_ui(self._scan_done, found)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_done(self, found: list[str]):
+        self._scan_btn.config(state="normal", text="Scan")
+        menu = self._cam_menu["menu"]
+        menu.delete(0, "end")
+        if not found:
+            self._write_log("⚠  No cameras found (check USB / camera permission)", "warn")
+            found = [self._cam_var.get()]
+        for label in found:
+            menu.add_command(label=label, command=lambda v=label: self._cam_var.set(v))
+        current = self._parse_cam_index(self._cam_var.get())
+        match = next((f for f in found if self._parse_cam_index(f) == current), found[0])
+        self._cam_var.set(match)
+        self._write_log(f"📷  Found {len(found)} camera(s): " + ", ".join(found), "info")
 
     def _browse_file(self):
         path = filedialog.askopenfilename(
@@ -345,6 +457,8 @@ class OperatorApp:
                 self._write_log("⚠  No file selected", "warn")
                 return
             self._cfg["sensor"]["file_path"] = path
+        else:
+            self._cfg["sensor"]["camera_index"] = self._parse_cam_index(self._cam_var.get())
 
         self._status_var.set("⏳  Connecting…")
         self._feed_canvas.itemconfig(self._canvas_text, text="Connecting…")
@@ -367,10 +481,10 @@ class OperatorApp:
             cap = cv2.VideoCapture(scfg.get("file_path", ""))
 
         if not cap.isOpened():
-            msg = ("Camera index 0 not found"
+            msg = (f"Camera index {scfg.get('camera_index', 0)} not found\n(try Scan, or check camera permission)"
                    if source == "camera"
                    else f"Could not open file:\n{scfg.get('file_path','')}")
-            self._root.after(0, self._cam_error, msg)
+            self._call_ui(self._cam_error, msg)
             return
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -380,7 +494,7 @@ class OperatorApp:
         tracker    = RoverTracker(self._cfg, homography)
 
         # Signal UI that we're live
-        self._root.after(0, self._cam_connected)
+        self._call_ui(self._cam_connected)
 
         # For file source: show first frame as frozen preview, wait for Start Trial
         preview = None
@@ -414,7 +528,7 @@ class OperatorApp:
                 if source == "file":
                     # End of file — stop the trial automatically if running
                     if self._running.is_set():
-                        self._root.after(0, self._stop_trial)
+                        self._call_ui(self._stop_trial)
                     time.sleep(0.05)
                     continue
                 else:
@@ -442,7 +556,7 @@ class OperatorApp:
                         continue
                     self._logger.log_event(ev)
                     label = f"{ts:6.1f}s  ⚡ {ev.event_type}"
-                    self._root.after(0, self._write_log, label, "auto")
+                    self._call_ui(self._write_log, label, "auto")
 
             self._push_display_frame(debug)
 
@@ -480,6 +594,16 @@ class OperatorApp:
     # ══════════════════════════════════════════════════════════════════════════
 
     def _poll(self):
+        while True:
+            try:
+                fn, args = self._ui_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn(*args)
+            except Exception as exc:          # never let a worker callback kill the poll loop
+                print(f"UI callback error: {exc!r}")
+
         try:
             frame = self._frame_q.get_nowait()
             if _PIL:
