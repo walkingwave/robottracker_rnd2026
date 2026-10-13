@@ -1,93 +1,55 @@
-_config_path: config.yaml
-data:
-  events_format: json
-  output_root: trials
-  trajectory_flush_every: 30
-events:
-  collision_debounce_s: 1.0
-  collision_decel_ratio: 0.5
-  collision_margin_mm: 50.0
-  intervention_min_gap_s: 2.0
-  intervention_velocity_jump_mms: 400.0
-  stop_min_duration_s: 1.0
-  stop_velocity_threshold_mms: 5.0
-homography:
-  pixel_points:
-  - - 271
-    - 159
-  - - 1665
-    - 200
-  - - 1681
-    - 906
-  - - 220
-    - 886
-  world_points:
-  - - 0.0
-    - 0.0
-  - - 2438.4
-    - 0.0
-  - - 2438.4
-    - 1219.2
-  - - 0.0
-    - 1219.2
-logging:
-  level: INFO
-  log_to_file: false
+# RobotTracker configuration. Every key is optional; anything left out uses
+# the built-in default. Unknown keys are rejected, so typos are caught on start.
+# Calibration and the background image are NOT stored here: they are saved by
+# the operator panel into setup/ (see paths.setup_dir).
+
 maze:
-  length_ft: 8.0
-  length_mm: 2438.4
-  obstacles:
-  - - 1219.2
-    - 0.0
-    - 1524.0
-    - 304.8
-  - - 1828.8
-    - 0.0
-    - 2133.6
-    - 304.8
-  - - 609.6
-    - 304.8
-    - 914.4
-    - 609.6
-  - - 304.8
-    - 609.6
-    - 609.6
-    - 914.4
-  - - 914.4
-    - 609.6
-    - 1524.0
-    - 914.4
-  - - 1828.8
-    - 609.6
-    - 2133.6
-    - 1219.2
-  width_ft: 4.0
-  width_mm: 1219.2
-perception:
-  area_tolerance_factor: 2.5
-  bgs_algorithm: MOG2
-  bgs_detect_shadows: false
-  bgs_history: 400
-  bgs_var_threshold: 200
-  bright_threshold: 700
-  max_aspect_ratio: 4.0
-  max_contour_area_px: 50000
-  max_jump_mm: 200
-  max_miss_frames: 10
-  max_velocity_mms: 1500.0
-  min_aspect_ratio: 0.3
-  min_contour_area_px: 500
-  position_smoothing_alpha: 0.4
-sensor:
-  camera_index: 0
-  file_path: data_/WIN_20260225_15_07_32_Pro.mp4
-  source: file
-  target_fps: null
-visualization:
-  dashboard_refresh_s: 2.0
-  event_colors:
-    manual_intervention: '#9467bd'
-    stop: '#ff7f0e'
-    wall_collision: '#d62728'
-  path_color: '#1f77b4'
-  speed_smoothing_window: 15
+  # x runs along the length, y along the width. The origin is the corner you
+  # click first during calibration (top-left as seen by the camera).
+  length_mm: 2438.4   # 8 ft
+  width_mm: 1219.2    # 4 ft
+  # Interior wall blocks as [x0, y0, x1, y1] in mm (drawn on maps only).
+  walls:
+    - [1219.2, 0.0, 1524.0, 304.8]
+    - [1828.8, 0.0, 2133.6, 304.8]
+    - [609.6, 304.8, 914.4, 609.6]
+    - [304.8, 609.6, 609.6, 914.4]
+    - [914.4, 609.6, 1524.0, 914.4]
+    - [1828.8, 609.6, 2133.6, 1219.2]
+
+camera:
+  source: camera      # camera | file | none  (what to connect on start-up)
+  index: 0            # run `robottracker cameras` to list indices
+  width: 1280
+  height: 720
+  fps: 30
+  file: ""            # used when source: file
+  realtime: true      # play files at natural speed
+
+tracker:
+  mode: motion        # motion (no rover changes) | aruco (printed marker on the rover)
+  rover_size_mm: 250  # rough footprint; sizes the blob filters
+  diff_threshold: 35  # raise if shadows/glare are detected as the rover
+  gate_mm: 300        # max jump between frames before a detection is ignored
+  max_coast_s: 1.5    # how long to predict through occlusions before giving up
+  # aruco_id: 0       # aruco mode: only follow this marker id
+  # Parallax: the camera sees the top of the rover. Set both to correct it.
+  # camera_height_mm: 2500
+  # target_height_mm: 150
+
+metrics:
+  min_step_mm: 40     # movement below this is jitter (also ignores spinning in place)
+
+scoring:
+  collision_penalty_s: {1: 2, 2: 5, 3: 10}
+  intervention_penalty_s: 15
+
+server:
+  port: 8000
+  # operator_token: change-me   # allow operator controls from other devices
+  public_video: false           # show the camera on the student dashboard
+
+paths:
+  trials_dir: trials
+  setup_dir: setup
+  record_video: true

@@ -1,478 +1,215 @@
 # RobotTracker
 
-Overhead camera tracking and analytics system for MIE444 autonomous rover competitions.
+Overhead-camera tracking for maze rover competitions (MIE444). One program
+tracks the rover, records each trial, and serves two web pages:
 
-An instructor runs the **Operator Panel** (desktop app) to start/stop trials and log events. Students watch a live **Dashboard** (web browser) that updates in real time with their rover's path, distance, speed, and event timeline.
+- **Operator panel** (`/operator`, on the tracking computer): camera feed with
+  tracking overlay, setup, start/stop, hotkeys for logging collisions and
+  interventions.
+- **Dashboard** (`/`, for anyone on the network): live map of the run, speed,
+  events, replays of past runs and a leaderboard.
 
----
-
-## Table of Contents
-
-1. [System Overview](#system-overview)
-2. [Hardware Requirements](#hardware-requirements)
-3. [Installation](#installation)
-4. [First-Time Setup – Camera Calibration](#first-time-setup--camera-calibration)
-5. [Running the System](#running-the-system)
-   - [Step 1 – Start the Student Dashboard](#step-1--start-the-student-dashboard)
-   - [Step 2 – Launch the Operator Panel](#step-2--launch-the-operator-panel)
-   - [Step 3 – Run a Trial](#step-3--run-a-trial)
-6. [Operator Panel Reference](#operator-panel-reference)
-7. [Student Dashboard Reference](#student-dashboard-reference)
-8. [Configuration Reference](#configuration-reference)
-9. [Logging Modes – Auto vs Manual](#logging-modes--auto-vs-manual)
-10. [Trial Output Files](#trial-output-files)
-11. [Troubleshooting](#troubleshooting)
-12. [Project Structure](#project-structure)
+No second terminal, no desktop toolkit, nothing to install on the viewing devices.
 
 ---
 
-## System Overview
+## Install
 
-```
-Overhead USB Camera
-        │
-        ▼
- Operator Panel  ──────────────────────────────────────────┐
- (operator_ui.py)                                          │
-  • Live camera feed with green tracking box               │
-  • Start / Stop trial                                     │  writes to
-  • Log collisions (Class 1 / 2 / 3)                      ▼
-  • Log manual interventions                          trials/
-  • Auto or Manual-only logging modes                 └── RoverName_20260315_143022/
-                                                           ├── trajectory.csv
-                                                           ├── events.json
-                                                           ├── config_snapshot.yaml
-                                                           └── recording.lock  ← live indicator
-                                                                │
-                                                                ▼
-                                                      Student Dashboard
-                                                      (dashboard.py)
-                                                       • Live path map
-                                                       • Distance / speed
-                                                       • Event timeline
+Python 3.10 or newer.
+
+```bash
+git clone https://github.com/walkingwave/robottracker_rnd2026.git
+cd robottracker_rnd2026
+python -m venv .venv
+# Windows: .venv\Scripts\activate     macOS/Linux: source .venv/bin/activate
+pip install -e .
 ```
 
----
+## Try it without a camera
 
-## Hardware Requirements
+```bash
+robottracker demo
+```
 
-| Component | Recommendation |
+This generates a synthetic overhead video of a rover driving the maze (already
+calibrated) and opens the operator panel. Click **Capture background**, type a
+team name, press **Space**, and open the dashboard link from the header.
+
+## Running a competition
+
+```bash
+robottracker            # same as `robottracker serve`
+```
+
+The terminal prints two links: the operator panel (opens automatically) and
+the dashboard address to share with students.
+
+### One-time setup (repeat if the camera moves)
+
+The panel's **Setup** checklist walks through these:
+
+1. **Connect** a camera (click **Scan** to list them) or a video file.
+2. **Calibrate**: click the four maze corners in the feed, clockwise from
+   top-left. The yellow outline and 1 ft grid should then sit exactly on the
+   maze. Wrong click order is rejected with an explanation.
+3. **Capture background**: take the rover out and click it. RobotTracker
+   records about 2 s of the empty maze and compares every frame against it.
+4. Put the rover in. It locks on after a few frames and the circle turns green.
+   If it locks onto the wrong thing, press **R** and click the rover.
+
+Calibration and background are saved in `setup/` and reused next time.
+
+### Running a trial
+
+| Key | Action |
 |---|---|
-| Overhead camera | Any USB webcam that can cover the full maze; 1080p preferred |
-| Camera mount | ceiling mount directly above the maze centre |
-| Computer | Any machine capable of running Python 3.10+ and OpenCV |
-| Network | Both operator laptop and student display must be on the same network for dashboard sharing |
+| `Space` | Start trial (after typing the team name) |
+| `F` / `D` | Stop: **Finished** / **DNF** |
+| `1` `2` `3` | Log a collision of class 1, 2 or 3 |
+| `I` | Log a manual intervention |
+| `Z` | Undo the last event (or click × next to any event) |
+| `R` | Re-lock: click the rover in the feed |
+| `Esc` | Cancel calibrate / re-lock |
 
-**Maze dimensions configured in the system:** 8 ft × 4 ft (2438.4 mm × 1219.2 mm)
+Events are stamped with the trial clock and the rover's position at that
+moment. With a video file, the clip plays from the start when the trial starts
+and the trial stops by itself at the end.
 
----
+Past trials are listed under the feed. You can fix a team name, set or change
+the result, or **Discard** a false start (it moves to `trials/_discarded/`, so
+nothing is lost).
 
-## Installation
+### Scoring
 
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/BidoCodeHub/RobotTracker.git
-cd RobotTracker
-```
-
-### 2. Create and activate a virtual environment (recommended)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate          # macOS / Linux
-# .venv\Scripts\activate           # Windows
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Verify installation
-
-```bash
-python3 -c "import cv2, streamlit, PIL; print('OK')"
-```
+Finished runs rank by **run time + penalties**, then DNFs by distance
+travelled, then runs with no result. Penalties are set in `config.yaml`
+(default: collision class 1/2/3 = +2/+5/+10 s, intervention = +15 s). The
+leaderboard can show every run or each team's best, and exports to CSV.
 
 ---
 
-## First-Time Setup – Camera Calibration
+## How tracking works
 
-The system maps pixel positions from the camera to real-world millimetre coordinates using a homography matrix. You must calibrate once whenever the camera is moved.
+1. **Calibration** maps camera pixels to millimetres on the maze floor
+   (homography from the four corners).
+2. Each frame is **warped to a top-down view** of the maze, so sizes and
+   distances are in real units whatever the camera, resolution or mounting.
+3. **Detection** compares the frame with the captured empty-maze background.
+   Blobs are filtered by real-world size. Slow lighting drift is absorbed by
+   gradually updating the background everywhere except around the rover.
+4. A **Kalman filter** (constant velocity) smooths position, estimates
+   velocity, and predicts through short occlusions. Detections far from the
+   prediction are ignored. If a hand or arm touches the rover, only the
+   rover-sized area around the prediction is measured, so the position isn't
+   dragged. After `max_coast_s` without the rover, the tracker drops the lock
+   and searches again. A re-lock starts a new path segment, so the jump is
+   never counted as distance.
+5. **Distance** only grows once the rover is `min_step_mm` away from where it
+   was last counted. Jitter and spinning in place add nothing. **Top speed**
+   is measured over a 0.5 s window, so single-frame spikes can't inflate it.
 
-### Run the interactive calibration tool
+On synthetic footage the median position error is under 1 mm (95 % of frames
+within 9 mm), and measured
+distance is within 1 % of the true route (`tests/test_tracker.py`).
+
+### ArUco mode (most robust)
+
+For heading and immunity to shadows and people, put a printed marker on each
+rover:
 
 ```bash
-python3 main.py --calibrate
+robottracker marker --id 0 --size-mm 120     # writes marker_0.png
 ```
 
-A window will open showing the live camera feed. **Click the four corners of the maze in this exact order:**
+Print it at 100 % and mount it flat on top, with the printed top edge toward
+the rover's front. Then set `tracker.mode: aruco` (and optionally
+`tracker.aruco_id`) in `config.yaml`. No background capture is needed.
 
-```
-1 ── top-left          2 ── top-right
-│                               │
-4 ── bottom-left       3 ── bottom-right
-```
+### Parallax
 
-The calibration tool will print four pixel coordinate pairs to the terminal and write them to `config.yaml` under `homography.pixel_points`. The `world_points` (real-world mm coordinates) are already set correctly for an 8 ft × 4 ft maze and do not need to change.
-
-
+The camera sees the top of the rover, which appears shifted away from the
+image centre compared with its footprint. For tall rovers far from the centre,
+set `tracker.camera_height_mm` and `tracker.target_height_mm` to correct it.
 
 ---
 
-## Running the System
-
-Open **two terminal windows** (or two tabs). Both must be in the project directory with the virtual environment activated.
-
-### Step 1 – Start the Student Dashboard
+## Other commands
 
 ```bash
-streamlit run dashboard.py
+robottracker cameras                         # list camera indices
+robottracker process run.mp4 --team "Team A" # track a recorded video offline
+robottracker marker --id 3                   # printable ArUco marker
+robottracker --config other.yaml --port 9000
 ```
 
-Streamlit will print a local URL (e.g. `http://localhost:8501`). Open this URL in any browser. To share with students on the same network, use the **Network URL** printed below it.
+## Trial files
 
-The dashboard will display a "Waiting for trial…" message until the operator starts a trial.
+Each trial is a folder in `trials/`, for example `20261004-143022_Team-A/`:
 
-### Step 2 – Launch the Operator Panel
-
-```bash
-python3 operator_ui.py
-```
-
-A desktop window will open – this is the instructor interface.
-
-### Step 3 – Run a Trial
-
-Follow the steps in the Operator Panel (details in the next section).
-
----
-
-## Operator Panel Reference
-
-### Layout
-
-```
-┌─────────────────────────────────┬──────────────────────┐
-│                                 │  🏁 RobotTracker      │
-│         LIVE FEED               │  Operator Panel       │
-│   (green box = tracked rover)   ├──────────────────────┤
-│                                 │  VIDEO SOURCE         │
-│                                 │  ● Live Camera        │
-│                                 │  ○ Video File         │
-│                                 │  Camera [0 (1280x720)▾] [Scan] │
-│                                 │  [ Connect ]          │
-│                                 ├──────────────────────┤
-│                                 │  ROVER / TEAM NAME    │
-│                                 │  [ TeamName_______ ]  │
-│                                 ├──────────────────────┤
-│                                 │  00:00.0              │
-│                                 │  [ ▶ START TRIAL ]    │
-│                                 │  [ ⏹ STOP TRIAL  ]    │
-│                                 ├──────────────────────┤
-│                                 │  LOGGING MODE         │
-│                                 │  Collisions: Auto     │
-│                                 │  Interventions: Auto  │
-│                                 ├──────────────────────┤
-│                                 │  LOG COLLISION        │
-│                                 │  [Class1][Class2][C3] │
-│                                 │  [🖐 MANUAL INTERV. ] │
-│                                 ├──────────────────────┤
-│                                 │  EVENT LOG            │
-│                                 │  (scrollable list)    │
-└─────────────────────────────────┴──────────────────────┘
-```
-
-### Running a Trial – Step by Step
-
-| Step | Action |
+| File | Contents |
 |---|---|
-| **1** | Select **Live Camera** or **Video File**. For a camera, click **Scan** to list attached cameras (built-in, USB webcam, iPhone Continuity Camera) and pick one from the dropdown. For a file, click **Browse**. Then click **Connect** |
-| **2** | Wait for the live feed to appear in the left panel |
-| **3** | Type the rover/team name in the **ROVER / TEAM NAME** field |
-| **4** | Click **▶ START TRIAL** – the timer starts, recording begins |
-| **5** | Monitor the green bounding box in the feed; log collisions/interventions as needed |
-| **6** | Click **⏹ STOP TRIAL** when the run is complete |
+| `trial.json` | Team, result, notes, events, summary statistics |
+| `trajectory.csv` | `t, x_mm, y_mm, vx_mms, vy_mms, heading_deg, state, track_id, measured` per frame |
+| `video.mp4` | Raw camera footage (turn off with `paths.record_video: false`) |
 
-> When using a video file: the video stays paused on the first frame after Connect. It only starts playing when you click **START TRIAL**. The trial ends automatically when the video finishes.
+Coordinates are millimetres from the calibration origin. `heading_deg` is
+counter-clockwise from +x, with y pointing up on the map. If the program
+crashes mid-trial, the trial is recovered and marked *interrupted* on the next
+start.
 
-### Collision Logging
+## Configuration
 
-Click the appropriate button when the rover hits a wall:
+Everything is in `config.yaml`, which is commented. Every key is optional and
+misspelled keys are rejected on start. The tuning knobs you're most likely to
+touch:
 
-| Button | Colour | Severity |
-|---|---|---|
-| **Class 1** | Orange | Minor graze – rover self-recovers immediately |
-| **Class 2** | Red | Moderate impact – rover briefly stalls |
-| **Class 3** | Purple | Hard collision – rover gets stuck or requires recovery |
-
-### Manual Intervention Logging
-
-Click **🖐 MANUAL INTERVENTION** any time the instructor physically touches or repositions the rover.
-
----
-
-## Student Dashboard Reference
-
-The student dashboard auto-updates every 2 seconds while a trial is live.
-
-### Sidebar
-
-- **Trial selector** – automatically follows the live trial; after recording stops the last completed trial is shown. Students can also select any past trial from the dropdown.
-
-### Path Tab
-
-- **Map** – full-width overhead view of the maze with the rover's trajectory drawn in blue. Collision and intervention markers are shown on the path.
-- **Speedometer** – current instantaneous speed of the rover.
-- **Speed Over Time** – chart of rover speed across the trial duration.
-
-### Events Tab
-
-- Timeline of all logged events (auto-detected and manual) with timestamps.
-
-### Stats shown
-
-| Metric | Description |
+| Symptom | Setting |
 |---|---|
-| Duration | Total elapsed time of the trial |
-| Distance Travelled | Net path length in feet – jitter, rotation-in-place, and tracker glitches are all excluded (see [Distance Filtering](#distance-filtering)) |
-| Top Speed | Peak speed recorded during the trial |
-| Avg Speed | Mean speed across all frames |
-| Collisions | Count of wall collision events |
-| Interventions | Count of manual intervention events |
+| Shadows or glare detected as the rover | raise `tracker.diff_threshold` |
+| Rover not detected (dark rover on dark floor) | lower `tracker.diff_threshold`, re-capture background |
+| Locks onto small debris | raise `tracker.min_area_ratio` or set `rover_size_mm` correctly |
+| Loses the rover behind tall walls | raise `tracker.max_coast_s` |
 
----
-
-## Distance Filtering
-
-Raw per-frame position data contains two types of noise that would inflate the distance metric if accumulated directly:
-
-| Noise Type | Cause | Effect without filtering |
-|---|---|---|
-| **Jitter** | Sub-pixel centroid noise from background subtraction | ~300–600 mm of fake distance per second at 30 fps |
-| **Rotation-in-place** | Rover spinning without translating; centroid orbits the rover centre | Accumulates as apparent travel even though the rover hasn't moved |
-
-### How it is filtered
-
-Distance is computed in three layers – in the tracker, in the logger, and in the dashboard – all using the same approach:
-
-1. **1-second time-window chunking** – all frames within each second are averaged into a single position. Random jitter and rotation both cancel out over ~1 second, leaving only genuine net displacement.
-2. **30 mm dead-band** – chunk-to-chunk steps smaller than 30 mm are ignored (residual noise after averaging).
-3. **400 mm teleport cap** – chunk-to-chunk steps larger than 400 mm are also ignored (tracker glitch / lost tracking).
-
-The dashboard adds a 15-frame median pre-filter and uses 2-second chunks for an extra layer of smoothing.
-
----
-
-## Configuration Reference
-
-All tuneable parameters live in `config.yaml`. Do not hardcode values in Python files.
-
-```yaml
-maze:
-  length_ft: 8.0           # Physical maze length
-  width_ft: 4.0            # Physical maze width
-
-homography:
-  pixel_points:            # Four corners in pixel space – set by --calibrate
-    - [x1, y1]             # top-left
-    - [x2, y2]             # top-right
-    - [x3, y3]             # bottom-right
-    - [x4, y4]             # bottom-left
-
-perception:
-  bgs_algorithm: MOG2      # Background subtractor: MOG2 or KNN
-  bgs_history: 200         # Frames used to build background model
-  bgs_var_threshold: 40    # Sensitivity – lower = more sensitive
-  min_contour_area_px: 500 # Minimum blob size to consider as rover (pixels²)
-  max_contour_area_px: 50000
-  max_jump_mm: 200         # Max allowed single-frame displacement (mm)
-  max_miss_frames: 10      # Frames lost before track is reset
-  position_smoothing_alpha: 0.4  # EMA smoothing – lower = smoother, more lag
-  max_velocity_mms: 1500.0 # Physical speed cap (~5 ft/s)
-
-events:
-  collision_margin_mm: 50.0     # Distance from wall to trigger collision
-  collision_debounce_s: 1.0     # Minimum gap between auto-detected collisions
-  stop_velocity_threshold_mms: 5.0   # Speed below which rover is "stopped"
-  stop_min_duration_s: 1.0      # How long stopped before logging a stop event
-
-data:
-  output_root: trials           # Directory where trial folders are saved
-  trajectory_flush_every: 30    # Write CSV to disk every N frames (~1 second)
-
-sensor:
-  source: file             # "file" or "camera"
-  file_path: data_/WIN_20260225_15_07_32_Pro.mp4
-  camera_index: 0          # USB camera index (0 = first camera)
-```
-
-### Tuning Tips
-
-- **Rover not detected / box appears on wrong object** → increase `min_contour_area_px` or check lighting and camera angle.
-- **Tracker loses the rover mid-run** → decrease `bgs_var_threshold` (more sensitive) or increase `max_miss_frames`.
-- **Distance is higher than expected** → decrease `position_smoothing_alpha` for more aggressive EMA smoothing; the 1-second chunking + 30 mm dead-band automatically filters jitter and rotation-in-place.
-- **Auto-collision events fire incorrectly** → increase `collision_debounce_s` or switch to **Manual-only** collision mode.
-
----
-
-## Logging Modes – Auto vs Manual
-
-The Operator Panel offers two independent mode toggles:
-
-| Toggle | Auto mode | Manual only mode |
-|---|---|---|
-| **Collisions** | System detects wall proximity and logs automatically | Only collisions you click with Class 1/2/3 buttons are recorded |
-| **Interventions** | System detects sudden velocity jumps and logs automatically | Only interventions you click 🖐 are recorded |
-
-These can be mixed (e.g. auto collisions + manual interventions). The mode can be changed at any time, including mid-trial.
-
----
-
-## Trial Output Files
-
-Each trial produces a folder under `trials/` named `<RoverName>_<YYYYMMDD_HHMMSS>/`:
-
-```
-trials/
-└── TeamAlpha_20260315_143022/
-    ├── trajectory.csv        ← per-frame rover state
-    ├── events.json           ← timestamped event log
-    └── config_snapshot.yaml  ← exact config used for this trial
-```
-
-### trajectory.csv columns
-
-| Column | Description |
-|---|---|
-| `frame_idx` | Frame number |
-| `timestamp_s` | Elapsed time in seconds |
-| `x_mm` | Rover X position (0 = left wall) |
-| `y_mm` | Rover Y position (0 = top wall) |
-| `velocity_mms` | Instantaneous speed (mm/s) |
-| `heading_deg` | Heading angle (degrees, CCW from East) |
-| `event_flags` | Bitmask of active event flags |
-
-### events.json structure
-
-```json
-[
-  {
-    "event_type": "wall_collision",
-    "timestamp_s": 14.3,
-    "x_mm": 52.1,
-    "y_mm": 610.4,
-    "metadata": { "source": "manual", "class": "Class 2" }
-  }
-]
-```
-
----
+The **Detection mask** view in the operator panel shows exactly what the
+detector sees.
 
 ## Troubleshooting
 
-### Operator Panel window never appears or is blank (macOS)
+- **Camera won't open**: close other apps using it (Zoom, Teams, Camera app),
+  click **Scan**, and on macOS allow camera access for your terminal.
+- **Outline doesn't match the maze**: re-run **Calibrate**. The background is
+  cleared automatically and must be re-captured.
+- **Students can't open the dashboard**: both devices must be on the same
+  network. Allow Python through the firewall, and use the address the
+  terminal prints (not `localhost`).
+- **Operator panel from a second laptop**: set `server.operator_token` and
+  open `http://<tracker-ip>:8000/operator?token=<token>` once.
 
-The macOS system Python (`/usr/bin/python3`, 3.9) bundles Tk 8.5, whose event loop stalls on recent macOS releases, so the window never draws. Use a Python 3.10+ build with Tk 8.6 or newer, then recreate the virtual environment:
-
-```bash
-uv python install 3.12
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -r requirements.txt
-```
-
-Check with `python3 -c "import tkinter; print(tkinter.TkVersion)"` (should print 8.6 or 9.0).
-
-### Green tracking box disappears during the run
-
-The tracker lost the rover. Common causes and fixes:
-
-- Camera is moving or vibrating → secure the mount
-- Lighting changed (e.g. someone walked past a window) → use consistent artificial lighting
-- Rover moved very fast → tracker should recover within `max_miss_frames` (default 10) frames
-- `bgs_history` too low → the background model hasn't fully learned the static scene; increase to 300–500
-
-### "Could not open file" error on Connect
-
-- Check that the file path is correct and the video file exists
-- Supported formats: `.mp4`, `.avi`, `.mov`, `.mkv`
-
-### Camera stuck on "Connecting…"
-
-- Click **Scan** in the Operator Panel and pick the right camera from the dropdown (or set `camera_index` in `config.yaml`)
-- On Linux: check `ls /dev/video*` to find available camera devices
-- Ensure no other application is using the camera
-
-### Dashboard not updating
-
-- Confirm `streamlit run dashboard.py` is running in a separate terminal
-- The dashboard auto-refreshes every 2 seconds – wait a moment after starting a trial
-- Ensure both terminals are pointing to the same project directory (same `trials/` folder)
-- **Stuck on a stale "live" trial** – if the Operator Panel was force-quit mid-trial, a `recording.lock` file may have been left behind. The dashboard treats any lock file older than 30 seconds as stale and ignores it automatically. If the dashboard is still stuck, delete the lock file manually: `rm trials/<trial_name>/recording.lock`
-
-### Distance is unrealistically high
-
-- The system automatically filters out jitter and rotation-in-place using 1-second time-window chunking with a 30 mm dead-band (see [Distance Filtering](#distance-filtering))
-- If distance is still inflated, reduce `position_smoothing_alpha` in `config.yaml` (e.g. to 0.25) for more aggressive EMA smoothing on the raw centroid position
-
-### Calibration / homography looks wrong (path is skewed or stretched)
-
-- Re-run `python3 main.py --calibrate` and click the corners more precisely
-- Ensure the camera is as close to directly overhead as possible; oblique angles introduce perspective error that the homography partially but not fully corrects
-
----
-
-## Project Structure
-
-```
-robottracker/
-├── operator_ui.py          ← Instructor desktop app (run this to start)
-├── dashboard.py            ← Student web dashboard (streamlit)
-├── main.py                 ← CLI entry point (calibration, headless processing)
-├── config.yaml             ← All configuration parameters
-├── requirements.txt
-│
-├── rover_tracker/
-│   ├── perception/
-│   │   ├── tracker.py      ← MOG2/KNN background subtraction, MeanShift tracking,
-│   │   │                      adaptive EMA smoothing; reference images pre-loaded at
-│   │   │                      startup; BGS model is fully reset between trials
-│   │   ├── homography.py   ← Pixel ↔ world coordinate transform
-│   │   ├── background1new.jpg  ← Reference background for initial detection
-│   │   └── background_mat.jpg  ← Maze boundary mask for initial detection
-│   ├── events/
-│   │   └── event_detector.py   ← Collision, stop, intervention detection
-│   ├── state/
-│   │   └── rover_state.py  ← RoverState dataclass; StateHistory with
-│   │                          noise-filtered total_distance_mm()
-│   ├── data/
-│   │   └── trial_logger.py ← CSV/JSON logging, recording.lock management;
-│   │                          distance computed with 1-second chunking
-│   ├── visualization/
-│   │   └── dashboard.py    ← Streamlit dashboard; stale-lock detection;
-│   │                          2-second chunking + dead-band distance filtering
-│   └── sensor/             ← Camera / video file input abstraction
-│
-├── tests/                  ← pytest unit tests (24 tests, all passing)
-│   ├── test_event_detector.py
-│   ├── test_homography.py
-│   ├── test_state.py
-│   └── test_trial_logger.py
-│
-├── data_/                  ← Sample reference videos (not committed to git)
-└── trials/                 ← Trial output folders (not committed to git)
-```
-
----
-
-## Running Tests
+## Development
 
 ```bash
-python3 -m pytest tests/ -v
+pip install -e ".[dev]"
+pytest              # includes accuracy tests on synthetic footage
+ruff check src tests
+```
+
+```
+src/robottracker/
+  cli.py         commands
+  config.py      config schema and defaults
+  geometry.py    calibration, pixel <-> mm, top-down warp
+  detection.py   background-difference and ArUco detectors
+  kalman.py      constant-velocity Kalman filter
+  tracker.py     lock / coast / lose / re-acquire logic
+  metrics.py     distance, speed, scoring (single source of truth)
+  storage.py     trial recording, listing, leaderboard, crash recovery
+  video.py       camera and video-file sources
+  engine.py      processing thread, trial control, overlay rendering
+  server.py      FastAPI app: pages, live stream (SSE + MJPEG), API
+  synthetic.py   synthetic maze footage for the demo and tests
+  web/           operator panel and dashboard (plain HTML/JS, no build step)
 ```
 
 ---
 
-*RobotTracker – MIE491 Capstone Design (built for MIE444 Mechatronics Engineering Design rover competitions)*
+*RobotTracker, MIE491 Capstone Design, built for MIE444 rover competitions.*

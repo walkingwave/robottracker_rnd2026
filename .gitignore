@@ -37,3 +37,8 @@ data_/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# RobotTracker runtime data
+setup/
+demo/
+*.mp4

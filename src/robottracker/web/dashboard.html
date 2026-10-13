@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RobotTracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%232563eb'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .hero { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+    .hero h1 { font-size: 30px; }
+    .hero .sub { color: var(--muted); }
+    .main-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; margin-top: 16px; }
+    @media (max-width: 1000px) { .main-grid { grid-template-columns: 1fr; } }
+    .replay-bar { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+    .replay-bar input[type=range] { flex: 1; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 8px; align-items: center; }
+    .legend span { display: inline-flex; gap: 6px; align-items: center; }
+    .ramp { width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgb(59,130,246), rgb(16,185,129), rgb(234,179,8), rgb(239,68,68)); }
+    .waiting { text-align: center; padding: 50px 16px; }
+    .waiting h1 { font-size: 26px; margin-bottom: 8px; }
+    .rank { font-weight: 700; width: 36px; }
+    .rank.r1 { color: #d4a017; } .rank.r2 { color: #9ca3af; } .rank.r3 { color: #b87333; }
+    #video { width: 100%; border-radius: 8px; display: block; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">RobotTracker</div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="live" class="on">Live</button>
+      <button data-tab="board">Leaderboard</button>
+      <button data-tab="runs">All runs</button>
+    </nav>
+    <div class="spacer"></div>
+    <span class="pill hidden" id="pill-live"><span class="dot"></span><span>LIVE</span></span>
+    <div class="seg" id="units"><button data-u="ft">ft</button><button data-u="m">m</button></div>
+  </header>
+
+  <main class="page">
+    <!-- Live / run detail -->
+    <section id="tab-live">
+      <div class="waiting card hidden" id="waiting">
+        <h1>Waiting for the first run</h1>
+        <p class="muted">This page updates by itself when a trial starts.</p>
+      </div>
+      <div id="run-view" class="hidden">
+        <div class="hero">
+          <h1 id="run-team">–</h1>
+          <span class="sub" id="run-sub"></span>
+          <div class="spacer"></div>
+          <a class="btn small hidden" id="run-csv" download>Download CSV</a>
+          <button class="btn small hidden" id="back-live">Back to live</button>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="label">Time</div><div class="value" id="st-time">–</div></div>
+          <div class="stat"><div class="label">Distance</div><div class="value"><span id="st-dist">–</span><span class="unit" id="st-dist-u"></span></div></div>
+          <div class="stat"><div class="label" id="st-speed-label">Avg speed</div><div class="value"><span id="st-speed">–</span><span class="unit" id="st-speed-u"></span></div></div>
+          <div class="stat"><div class="label">Top speed</div><div class="value"><span id="st-top">–</span><span class="unit" id="st-top-u"></span></div></div>
+          <div class="stat"><div class="label">Collisions</div><div class="value" id="st-coll">–</div></div>
+          <div class="stat"><div class="label">Interventions</div><div class="value" id="st-int">–</div></div>
+        </div>
+        <div class="main-grid">
+          <div class="stack">
+            <div class="card">
+              <canvas class="fill" id="map" role="img" aria-label="Maze map with the rover's path"></canvas>
+              <div class="replay-bar hidden" id="replay-bar">
+                <button class="btn" id="play">▶ Replay</button>
+                <input type="range" id="scrub" min="0" max="1000" value="1000" aria-label="Replay position">
+                <span class="mono small" id="scrub-t">–</span>
+              </div>
+              <div class="legend">
+                <span>slow <span class="ramp"></span> fast</span>
+                <span><span class="swatch" style="background:var(--c1);transform:rotate(45deg)"></span>Class 1</span>
+                <span><span class="swatch" style="background:var(--c2);transform:rotate(45deg)"></span>Class 2</span>
+                <span><span class="swatch" style="background:var(--c3);transform:rotate(45deg)"></span>Class 3</span>
+                <span><span class="swatch" style="background:var(--interv);border-radius:50%"></span>Intervention</span>
+              </div>
+            </div>
+            <div class="card">
+              <h2>Speed</h2>
+              <canvas class="fill" id="chart" role="img" aria-label="Speed over time"></canvas>
+            </div>
+          </div>
+          <div class="stack">
+            <div class="card hidden" id="video-card">
+              <h2>Camera</h2>
+              <img id="video" alt="Live camera">
+            </div>
+            <div class="card">
+              <h2>Events</h2>
+              <ul class="events" id="events"></ul>
+              <p class="muted small" id="events-empty">No events logged.</p>
+            </div>
+            <div class="card" id="mini-board-card">
+              <h2>Top 5</h2>
+              <table><tbody id="mini-board"></tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Leaderboard -->
+    <section id="tab-board" class="hidden">
+      <div class="card">
+        <div class="row" style="margin-bottom:10px">
+          <h2 class="grow">Leaderboard</h2>
+          <label class="small row" style="gap:6px"><input type="checkbox" id="best-only" checked> Best run per team</label>
+          <a class="btn small" id="board-csv" href="/api/leaderboard.csv?best_per_team=true">Export CSV</a>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Team</th><th>Result</th><th class="num">Time</th><th class="num">Penalty</th>
+              <th class="num">Score</th><th class="num">Distance</th><th class="num">Top speed</th>
+              <th class="num">Collisions</th><th class="num">Interv.</th></tr></thead>
+            <tbody id="board"></tbody>
+          </table>
+        </div>
+        <p class="muted small" id="scoring-note"></p>
+      </div>
+    </section>
+
+    <!-- All runs -->
+    <section id="tab-runs" class="hidden">
+      <div class="card">
+        <h2>All runs</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Team</th><th>When</th><th>Result</th><th class="num">Time</th><th class="num">Distance</th>
+              <th class="num">Avg speed</th><th class="num">Collisions</th><th class="num">Interv.</th></tr></thead>
+            <tbody id="runs"></tbody>
+          </table>
+        </div>
+        <p class="muted small">Click a run to replay it.</p>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="/static/dashboard.js"></script>
+</body>
+</html>

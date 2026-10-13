@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operator · RobotTracker</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%232563eb'/></svg>">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; }
+    @media (max-width: 1100px) { .layout { grid-template-columns: 1fr; } }
+    .feed-wrap { position: relative; background: #000; border-radius: 8px; overflow: hidden; line-height: 0; }
+    .feed-wrap img { width: 100%; display: block; user-select: none; -webkit-user-drag: none; }
+    .feed-wrap.clickable { cursor: crosshair; }
+    .feed-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .feed-banner {
+      position: absolute; left: 50%; top: 12px; transform: translateX(-50%); line-height: 1.4;
+      background: rgba(0,0,0,.78); color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 14px;
+      display: flex; gap: 10px; align-items: center;
+    }
+    .feed-banner .btn { padding: 3px 10px; font-size: 13px; background: #333; border-color: #555; color: #fff; }
+    .timer { font-family: var(--mono); font-size: 44px; font-weight: 700; text-align: center; letter-spacing: .02em; }
+    .timer.rec { color: var(--danger); }
+    .ev-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .ev-grid .btn { padding: 12px 6px; font-weight: 650; color: #fff; border: 0; }
+    .ev-grid .wide { grid-column: span 2; }
+    .mini-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; }
+    .mini-stats .value { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .mini-stats .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .setup-steps { display: grid; gap: 8px; }
+    .step { display: flex; gap: 10px; align-items: center; }
+    .step .num {
+      width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px;
+      font-weight: 700; background: var(--panel-2); border: 1px solid var(--border); flex: none;
+    }
+    .step.done .num { background: var(--good); border-color: var(--good); color: #fff; }
+    .keys { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    td input { width: 140px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">RobotTracker <small>Operator</small></div>
+    <span class="pill" id="pill-conn"><span class="dot"></span><span>Connecting…</span></span>
+    <span class="pill" id="pill-source"><span class="dot"></span><span>No source</span></span>
+    <span class="pill" id="pill-track"><span class="dot"></span><span>Tracker off</span></span>
+    <div class="spacer"></div>
+    <div class="seg" id="units"><button data-u="ft">ft</button><button data-u="m">m</button></div>
+    <a class="btn" href="/" target="_blank" rel="noopener">Open dashboard ↗</a>
+  </header>
+
+  <main class="page">
+    <div class="layout">
+      <section class="stack">
+        <div class="card">
+          <div class="row" style="margin-bottom:10px">
+            <div class="seg" id="views">
+              <button data-view="camera">Camera</button>
+              <button data-view="topdown">Top-down</button>
+              <button data-view="mask">Detection mask</button>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn" id="btn-relock" title="Click the rover in the feed to lock on (R)">Re-lock rover <kbd>R</kbd></button>
+            <button class="btn" id="btn-bg" title="Remove the rover first">Capture background</button>
+            <button class="btn" id="btn-cal">Calibrate</button>
+          </div>
+          <div class="feed-wrap" id="feed-wrap">
+            <img id="feed" alt="Live camera feed with tracking overlay">
+            <svg id="cal-svg" viewBox="0 0 1 1" preserveAspectRatio="none"></svg>
+            <div class="feed-banner hidden" id="feed-banner"></div>
+          </div>
+          <div class="keys" style="margin-top:10px">
+            <span><kbd class="kbd">Space</kbd> start</span>
+            <span><kbd class="kbd">F</kbd> finish</span>
+            <span><kbd class="kbd">D</kbd> DNF</span>
+            <span><kbd class="kbd">1</kbd><kbd class="kbd">2</kbd><kbd class="kbd">3</kbd> collision class</span>
+            <span><kbd class="kbd">I</kbd> intervention</span>
+            <span><kbd class="kbd">Z</kbd> undo last event</span>
+            <span><kbd class="kbd">R</kbd> re-lock</span>
+            <span><kbd class="kbd">Esc</kbd> cancel</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Recent trials <span class="spacer"></span>
+            <a class="small" href="/api/leaderboard.csv">Export leaderboard CSV</a></h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Team</th><th>Started</th><th class="num">Time</th><th class="num">Distance</th>
+                <th class="num">Coll.</th><th class="num">Interv.</th><th class="num">Tracked</th><th>Result</th><th></th></tr></thead>
+              <tbody id="trials"></tbody>
+            </table>
+          </div>
+          <p class="muted small" id="trials-empty">No trials yet.</p>
+        </div>
+      </section>
+
+      <aside class="stack">
+        <div class="card">
+          <h2>Setup</h2>
+          <div class="setup-steps">
+            <div class="step" id="step-source"><span class="num">1</span><span class="grow">Connect a camera or video</span></div>
+            <div class="step" id="step-cal"><span class="num">2</span><span class="grow">Calibrate maze corners</span></div>
+            <div class="step" id="step-bg"><span class="num">3</span><span class="grow">Capture background (empty maze)</span></div>
+            <div class="step" id="step-lock"><span class="num">4</span><span class="grow">Rover detected</span></div>
+          </div>
+          <hr style="border:0;border-top:1px solid var(--border);margin:12px 0">
+          <div class="stack" style="gap:8px">
+            <div class="seg" id="src-kind"><button data-k="camera">Camera</button><button data-k="file">Video file</button></div>
+            <div class="row" id="src-camera">
+              <select id="cam-select" class="grow"><option value="0">Camera 0</option></select>
+              <button class="btn" id="btn-scan">Scan</button>
+            </div>
+            <div class="row hidden" id="src-file">
+              <input id="file-input" class="grow" list="file-list" placeholder="Path to video file">
+              <datalist id="file-list"></datalist>
+            </div>
+            <button class="btn primary" id="btn-connect">Connect</button>
+          </div>
+        </div>
+
+        <div class="card stack">
+          <h2>Trial</h2>
+          <input id="team" placeholder="Team / rover name" list="team-list" autocomplete="off">
+          <datalist id="team-list"></datalist>
+          <div class="timer" id="timer">00:00.0</div>
+          <div id="idle-controls">
+            <button class="btn go big" id="btn-start" style="width:100%">▶ Start trial <kbd>Space</kbd></button>
+          </div>
+          <div id="run-controls" class="hidden stack" style="gap:8px">
+            <div class="row">
+              <button class="btn go big grow" id="btn-finish">Finished <kbd>F</kbd></button>
+              <button class="btn stop big grow" id="btn-dnf">DNF <kbd>D</kbd></button>
+            </div>
+            <button class="btn" id="btn-stop-none">Stop without result</button>
+          </div>
+          <div class="mini-stats">
+            <div><div class="value" id="ms-dist">–</div><div class="label">Distance</div></div>
+            <div><div class="value" id="ms-speed">–</div><div class="label">Speed</div></div>
+            <div><div class="value" id="ms-coll">0</div><div class="label">Collisions</div></div>
+            <div><div class="value" id="ms-int">0</div><div class="label">Interv.</div></div>
+          </div>
+        </div>
+
+        <div class="card stack">
+          <h2>Log events</h2>
+          <div class="ev-grid">
+            <button class="btn" data-ev="collision" data-sev="1" style="background:var(--c1)">Class 1 <kbd>1</kbd></button>
+            <button class="btn" data-ev="collision" data-sev="2" style="background:var(--c2)">Class 2 <kbd>2</kbd></button>
+            <button class="btn" data-ev="collision" data-sev="3" style="background:var(--c3)">Class 3 <kbd>3</kbd></button>
+            <button class="btn wide" data-ev="intervention" style="background:var(--interv)">Intervention <kbd>I</kbd></button>
+            <button class="btn" id="btn-undo" style="background:var(--panel-2);color:var(--text);border:1px solid var(--border)">Undo <kbd>Z</kbd></button>
+          </div>
+          <ul class="events" id="events"></ul>
+        </div>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="/static/operator.js"></script>
+</body>
+</html>
